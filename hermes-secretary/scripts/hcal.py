@@ -47,7 +47,9 @@ DEFAULT_CONFIG = {
     "lunch_end": "13:00",
     "buffer_minutes": 15,           # 会议间默认缓冲
     "max_daily_meeting_hours": 6,   # 单日会议总时长上限(超出则告警)
-    "work_days": [0, 1, 2, 3, 4],   # 周一至周五 (Monday=0)
+    "work_days": [0, 1, 2, 3, 4],
+    "airport_arrive_early_minutes": 90,
+    "commute_to_airport_minutes": 60,   # 周一至周五 (Monday=0)
     "friday_internal_only_after": "13:00",  # 周五下午仅内部事务
 }
 
@@ -370,6 +372,27 @@ def cmd_load_analysis(args):
           "insufficient_buffers": back_to_back})
 
 
+
+def cmd_upcoming(args):
+    """列出未来 N 小时内开始的日程,供定时提醒任务调用。"""
+    db = _load()
+    cfg = db["config"]
+    now = _now(cfg)
+    horizon = now + timedelta(hours=args.within)
+    items = []
+    for e in _active_events(db):
+        es, ee = _event_times(e, cfg)
+        if now <= es <= horizon:
+            mins = int((es - now).total_seconds() / 60)
+            items.append({"id": e["id"][:8], "title": e["title"],
+                          "start": e["start"], "end": e["end"],
+                          "type": e.get("type"), "location": e.get("location", ""),
+                          "starts_in_minutes": mins})
+    items.sort(key=lambda x: x["start"])
+    _out({"ok": True, "now": _fmt(now), "within_hours": args.within,
+          "count": len(items), "events": items})
+
+
 def cmd_config(args):
     db = _load()
     if args.set:
@@ -446,6 +469,10 @@ def main():
     l = sub.add_parser("load", help="单日负荷分析")
     l.add_argument("--date", required=True)
     l.set_defaults(func=cmd_load_analysis)
+
+    u = sub.add_parser("upcoming", help="未来N小时内的日程(供定时提醒)")
+    u.add_argument("--within", type=int, default=24, help="小时数,默认24")
+    u.set_defaults(func=cmd_upcoming)
 
     cf = sub.add_parser("config", help="查看/修改配置")
     cf.add_argument("--set", nargs="*", help="key=value")
