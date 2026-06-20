@@ -109,10 +109,32 @@ def snapshot(code, market, lookback):
     else:
         result["unavailable"].append({"price/klines": hist_r["errors"]})
 
-    # ---- 2. 个股资金流 ----
-    def _fund():
+    # ---- 2. 个股资金流:东财(完整历史) → 同花顺(当日即时,降级兜底) ----
+    # 东财走 push2his(反爬较严);同花顺走 10jqka,数据源独立,作为备源绕开东财反爬。
+    def _fund_em():
         return ak.stock_individual_fund_flow(stock=code, market=market)
-    fund_r = robust_fetch(f"fund:{code}", [("东财", _fund, True)])
+
+    def _fund_ths():
+        # 同花顺即时全市场资金流,按代码筛选本股 → 统一成东财式单行格式
+        import pandas as pd
+        df = ak.stock_fund_flow_individual(symbol="即时")
+        df["股票代码"] = df["股票代码"].astype(str).str.zfill(6)
+        row = df[df["股票代码"] == code]
+        if len(row) == 0:
+            raise Exception("同花顺即时资金流中未找到该股(可能停牌或非当日交易)")
+        r = row.iloc[0]
+        # 同花顺"净额"单位为元/万元视版本而定,统一尝试解析为万元
+        net = r.get("净额", r.get("资金流入净额", 0))
+        try:
+            net_val = float(str(net).replace("亿", "e8").replace("万", "e4").replace("元", ""))
+        except Exception:
+            net_val = float(pd.to_numeric(net, errors="coerce") or 0)
+        # 包装成与东财历史相同的结构(仅当日一行)
+        return pd.DataFrame([{"日期": datetime.now().strftime("%Y-%m-%d"),
+                              "主力净流入-净额": net_val,
+                              "主力净流入-净占比": float(pd.to_numeric(r.get("净占比", 0), errors="coerce") or 0)}])
+
+    fund_r = robust_fetch(f"fund:{code}", [("东财", _fund_em, True), ("同花顺", _fund_ths, False)])
     result["data_sources"]["fund_flow"] = fund_r["source"]
     if fund_r["from_cache"]:
         result["stale_warnings"].append(f"资金流为缓存数据(约{fund_r.get('cache_age_hours')}小时前)")
@@ -124,16 +146,22 @@ def snapshot(code, market, lookback):
             try:
                 rows.append({"date": str(r["日期"])[:10],
                              "main_net_wan": round(float(r["主力净流入-净额"]) / 1e4, 1),
-                             "main_pct": float(r["主力净流入-净占比"])})
+                             "main_pct": float(r.get("主力净流入-净占比", 0))})
             except Exception:
                 continue
         if rows:
             m5 = round(sum(x["main_net_wan"] for x in rows[-5:]), 1)
             m10 = round(sum(x["main_net_wan"] for x in rows[-10:]), 1)
+            partial = len(rows) < 5  # 同花顺备源只有当日一行
             result["data"]["fund_flow"] = {
-                "main_net_5d_wan": m5, "main_net_10d_wan": m10,
-                "trend": "持续流入" if m5 > 0 and m10 > 0 else ("持续流出" if m5 < 0 and m10 < 0 else "进出交织"),
-                "recent": rows[-7:]}
+                "main_net_today_wan": rows[-1]["main_net_wan"],
+                "main_net_5d_wan": None if partial else m5,
+                "main_net_10d_wan": None if partial else m10,
+                "trend": ("仅当日数据(备源)" if partial else
+                          ("持续流入" if m5 > 0 and m10 > 0 else
+                           ("持续流出" if m5 < 0 and m10 < 0 else "进出交织"))),
+                "recent": rows[-7:],
+                "note": "备源仅提供当日资金流,多日趋势暂缺" if partial else ""}
     else:
         result["unavailable"].append({"fund_flow": fund_r["errors"]})
 
@@ -204,11 +232,21 @@ def market_sentiment():
 
     def _mf():
         return ak.stock_market_fund_flow()
-    mf_r = robust_fetch("market_flow", [("东财", _mf, True)], cache_hours=12)
+    def _mf_ths():
+        # 同花顺大盘资金流(独立源),取最新一行的主力净额
+        import pandas as pd
+        df = ak.stock_fund_flow_big_deal()
+        return df
+    mf_r = robust_fetch("market_flow", [("东财", _mf, True), ("同花顺", _mf_ths, False)], cache_hours=12)
+    result["data_sources"]["market_flow"] = mf_r["source"]
     if mf_r["ok"] and mf_r["data"]:
         try:
             last = mf_r["data"][-1]
-            result["data"]["market_main_net_yi"] = round(float(last["主力净流入-净额"]) / 1e8, 1)
+            if "主力净流入-净额" in last:
+                result["data"]["market_main_net_yi"] = round(float(last["主力净流入-净额"]) / 1e8, 1)
+            else:
+                # 同花顺备源结构不同,保留原始供分析参考
+                result["data"]["market_flow_raw"] = last
         except Exception:
             result["unavailable"].append({"market_flow": "解析失败"})
     else:
@@ -234,31 +272,66 @@ def news(code):
 def selfcheck():
     import akshare as ak
     from datasource import _throttle_em
-    checks = {}
-    probes = {
-        "历史K线-东财": (lambda: ak.stock_zh_a_hist(symbol="000001", period="daily",
-                        start_date="20260601", end_date="20260611", adjust="qfq"), True),
-        "历史K线-腾讯(备)": (lambda: ak.stock_zh_a_hist_tx(symbol="sz000001",
-                        start_date="20260601", end_date="20260611"), False),
-        "个股资金流": (lambda: ak.stock_individual_fund_flow(stock="000001", market="sz"), True),
-        "大盘资金流": (lambda: ak.stock_market_fund_flow(), True),
-        "指数-东财": (lambda: ak.stock_zh_index_spot_em(symbol="沪深重要指数"), True),
-        "指数-新浪(备)": (lambda: ak.stock_zh_index_spot_sina(), False),
-        "千股千评": (lambda: ak.stock_comment_detail_zhpj_lspf_em(symbol="000001"), True),
-        "个股新闻": (lambda: ak.stock_news_em(symbol="000001"), True),
+    # 按"维度"组织,每个维度列出 [主源, 备源...],只要有一个通过该维度即可用
+    dimensions = {
+        "历史K线": [
+            ("东财", lambda: ak.stock_zh_a_hist(symbol="000001", period="daily",
+                start_date="20260601", end_date="20260611", adjust="qfq"), True),
+            ("腾讯", lambda: ak.stock_zh_a_hist_tx(symbol="sz000001",
+                start_date="20260601", end_date="20260611"), False),
+        ],
+        "个股资金流": [
+            ("东财", lambda: ak.stock_individual_fund_flow(stock="000001", market="sz"), True),
+            ("同花顺", lambda: ak.stock_fund_flow_individual(symbol="即时"), False),
+        ],
+        "大盘资金流": [
+            ("东财", lambda: ak.stock_market_fund_flow(), True),
+            ("同花顺", lambda: ak.stock_fund_flow_big_deal(), False),
+        ],
+        "指数行情": [
+            ("东财", lambda: ak.stock_zh_index_spot_em(symbol="沪深重要指数"), True),
+            ("新浪", lambda: ak.stock_zh_index_spot_sina(), False),
+        ],
+        "千股千评": [
+            ("东财", lambda: ak.stock_comment_detail_zhpj_lspf_em(symbol="000001"), True),
+        ],
+        "个股新闻": [
+            ("东财", lambda: ak.stock_news_em(symbol="000001"), True),
+        ],
     }
-    for name, (fn, is_em) in probes.items():
-        try:
-            if is_em:
-                _throttle_em()
-            df = fn()
-            checks[name] = {"ok": df is not None and len(df) > 0, "rows": len(df) if df is not None else 0}
-        except Exception as e:
-            checks[name] = {"ok": False, "error": str(e)[:80]}
-    ok_n = sum(1 for v in checks.values() if v["ok"])
-    return {"as_of": _now(), "passed": f"{ok_n}/{len(probes)}",
-            "note": "K线/指数有备源,主源失败但备源通过即可正常工作",
-            "akshare_version": ak.__version__, "checks": checks}
+    dim_results = {}
+    for dim, sources in dimensions.items():
+        dim_ok = False
+        used = None
+        tried = []
+        for name, fn, is_em in sources:
+            try:
+                if is_em:
+                    _throttle_em()
+                df = fn()
+                if df is not None and len(df) > 0:
+                    dim_ok = True
+                    used = name
+                    break
+                tried.append(f"{name}:空")
+            except Exception as e:
+                tried.append(f"{name}:{str(e)[:40]}")
+        dim_results[dim] = {"available": dim_ok, "source": used, "tried": tried}
+
+    ok_dims = sum(1 for v in dim_results.values() if v["available"])
+    total = len(dimensions)
+    return {
+        "as_of": _now(),
+        "akshare_version": ak.__version__,
+        "dimensions_available": f"{ok_dims}/{total}",
+        "all_critical_ok": all(dim_results[d]["available"] for d in ["历史K线", "个股资金流", "指数行情"]),
+        "verdict": ("✅ 可用:核心维度均有可用数据源" if ok_dims >= 5 and
+                    dim_results["历史K线"]["available"] and dim_results["个股资金流"]["available"]
+                    else "⚠ 部分维度全部源失败,请查看 details 并考虑升级 akshare"),
+        "details": dim_results,
+        "note": "判定标准是'每个维度至少一个源可用',而非接口总数。"
+                "某维度主源(东财)失败但备源(同花顺/腾讯/新浪)通过,即视为该维度可用。",
+    }
 
 
 def main():

@@ -16,6 +16,31 @@ A股 Tracker - 数据源韧性层(datasource)
 import json, os, time, random, hashlib
 from datetime import datetime, timedelta
 
+# ---- 反爬缓解:给 requests 全局注入浏览器 headers ----
+# 东财 push2his 等接口对默认的 python-requests UA 拦截较严,伪装成浏览器可显著降低被拦概率。
+def _install_browser_headers():
+    try:
+        import requests
+        _orig = requests.Session.request
+        UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+        def _patched(self, method, url, **kwargs):
+            headers = kwargs.get("headers") or {}
+            headers.setdefault("User-Agent", UA)
+            headers.setdefault("Accept", "*/*")
+            headers.setdefault("Accept-Language", "zh-CN,zh;q=0.9")
+            if "eastmoney" in str(url):
+                headers.setdefault("Referer", "https://data.eastmoney.com/")
+            kwargs["headers"] = headers
+            return _orig(self, method, url, **kwargs)
+        if not getattr(requests.Session, "_zskills_patched", False):
+            requests.Session.request = _patched
+            requests.Session._zskills_patched = True
+    except Exception:
+        pass
+
+_install_browser_headers()
+
 DATA_DIR = os.environ.get("ASTOCK_DIR", os.path.join(os.path.expanduser("~"), ".astock-tracker"))
 CACHE_DIR = os.path.join(DATA_DIR, "cache")
 
