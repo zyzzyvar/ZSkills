@@ -71,6 +71,9 @@ def main():
         else:
             item["note"] = s.get("note", "")
             brief["watchlist"].append(item)
+        # 批量采集多只股票时,股票之间留间隔,降低东财封IP风险
+        import time as _t, random as _r
+        _t.sleep(_r.uniform(1.0, 2.0))
 
     os.makedirs(BRIEF_DIR, exist_ok=True)
     path = os.path.join(BRIEF_DIR, f"{brief['date']}_{args.session}.json")
