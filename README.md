@@ -5,6 +5,7 @@ Agent Skills 集合,供 Hermes 加载使用。每个子目录为一个独立 ski
 | Skill | 说明 |
 |---|---|
 | [hermes-secretary](hermes-secretary/) | CEO 日程管理:自建日历引擎,排会/改期/冲突处理/空档搜索/差旅订票协作(任务台账),经验秘书式工作守则 |
+| [astock-tracker](astock-tracker/) | A股持仓与关注股跟踪:盘前/午间/盘后三次分析,资金面/技术面/基本面/政策面交叉研判,主力手法识别,客观分析与操作建议分开(基于 AKShare 数据) |
 
 ## 在 Hermes 上安装
 
