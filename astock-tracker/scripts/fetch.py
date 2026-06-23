@@ -21,6 +21,24 @@ import argparse, json, os, sys
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+def _check_deps():
+    """依赖预检:缺 akshare 时返回明确的安装指引,而非抛 traceback。"""
+    try:
+        import akshare  # noqa
+        return None
+    except ImportError:
+        skill_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return {
+            "ok": False,
+            "error": "缺少必需依赖 akshare,数据脚本无法运行",
+            "fix": f"请先运行一键安装: bash {os.path.join(skill_dir, 'install.sh')}",
+            "note": "install.sh 会自动安装 akshare(必需)与 tushare(可选实时),"
+                    "选国内镜像源并自检。装好后重试本命令即可。",
+        }
+
+
 from datasource import robust_fetch, code_with_market
 import tushare_source as ts
 
@@ -470,6 +488,13 @@ def main():
     nw = sub.add_parser("news"); nw.add_argument("--code", required=True)
     sub.add_parser("selfcheck")
     args = p.parse_args()
+
+    # 依赖预检:缺 akshare 时给出安装指引而非 traceback(selfcheck 除外,它自己会报)
+    dep = _check_deps()
+    if dep and args.cmd != "selfcheck":
+        _out(dep)
+        sys.exit(1)
+
     if args.cmd == "snapshot":
         _out(snapshot(args.code, args.market, args.lookback, with_realtime=args.realtime))
     elif args.cmd == "realtime":
