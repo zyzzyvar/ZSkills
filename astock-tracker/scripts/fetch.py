@@ -55,11 +55,17 @@ def _to_df(records):
 def realtime(code, market):
     """
     盘中实时报价(独立能力,不影响收盘后数据链路)。
-    Tushare realtime_quote(主) → AKShare 实时(备)。两者都失败才报错。
+    多源轮询,任一成功即返回,全部失败才报错:
+      1. Tushare realtime_quote(sina/dc,带重试)
+      2. AKShare 东财单股盘口 stock_bid_ask_em(轻量,带最新价+五档)
+      3. AKShare 雪球单股 stock_individual_spot_xq
+    爬虫类实时源在大陆易遇 RemoteDisconnected(反爬风控),故多源冗余。
     """
+    import time as _t, random as _r
     result = {"code": code, "market": market, "as_of": _now(), "data": None,
               "source": None, "errors": {}}
-    # 主源:Tushare 实时(需 tushare 包,0积分可用)
+
+    # 源1:Tushare 实时(需 tushare 包,0积分可用,已含 sina/dc 双源重试)
     if ts.realtime_available():
         try:
             result["data"] = ts.realtime_quote(code, market)
@@ -68,35 +74,60 @@ def realtime(code, market):
         except Exception as e:
             result["errors"]["tushare"] = str(e)[:80]
     else:
-        result["errors"]["tushare"] = "未安装 tushare 包(pip install tushare),已尝试备源"
+        result["errors"]["tushare"] = "未安装 tushare 包"
 
-    # 备源:AKShare 实时快照
+    import akshare as ak
+
+    # 源2:AKShare 东财单股盘口(轻量,比全市场 spot 稳)
+    for attempt in range(2):
+        try:
+            df = ak.stock_bid_ask_em(symbol=code)
+            if df is not None and len(df) > 0:
+                kv = dict(zip(df["item"], df["value"])) if "item" in df.columns else {}
+                price = float(kv.get("最新", kv.get("最新价", 0)) or 0)
+                pre_close = float(kv.get("昨收", 0) or 0)
+                if price > 0:
+                    pct = round((price / pre_close - 1) * 100, 2) if pre_close > 0 else None
+                    result["data"] = {
+                        "name": "", "price": price, "pre_close": pre_close,
+                        "open": float(kv.get("今开", 0) or 0),
+                        "high": float(kv.get("最高", 0) or 0),
+                        "low": float(kv.get("最低", 0) or 0),
+                        "pct_change": pct,
+                        "change": round(price - pre_close, 2) if pre_close else None,
+                        "volume_lots": float(kv.get("总手", 0) or 0),
+                        "amount_wan": round(float(kv.get("金额", 0) or 0) / 1e4, 1),
+                        "bid1": float(kv.get("buy_1", kv.get("买一", 0)) or 0),
+                        "ask1": float(kv.get("sell_1", kv.get("卖一", 0)) or 0),
+                        "source": "AKShare实时(东财盘口)",
+                    }
+                    result["source"] = result["data"]["source"]
+                    return result
+        except Exception as e:
+            result["errors"]["akshare_em"] = str(e)[:80]
+            _t.sleep(_r.uniform(0.5, 1.0))
+
+    # 源3:AKShare 雪球单股实时
     try:
-        import akshare as ak
-        df = ak.stock_zh_a_spot_em()
-        df["代码"] = df["代码"].astype(str).str.zfill(6)
-        row = df[df["代码"] == code]
-        if len(row) > 0:
-            r = row.iloc[0]
-            result["data"] = {
-                "name": r.get("名称", ""),
-                "price": float(r.get("最新价", 0) or 0),
-                "pct_change": float(r.get("涨跌幅", 0) or 0),
-                "change": float(r.get("涨跌额", 0) or 0),
-                "high": float(r.get("最高", 0) or 0),
-                "low": float(r.get("最低", 0) or 0),
-                "open": float(r.get("今开", 0) or 0),
-                "volume_lots": float(r.get("成交量", 0) or 0),
-                "amount_wan": round(float(r.get("成交额", 0) or 0) / 1e4, 1),
-                "turnover_rate": float(r.get("换手率", 0) or 0),
-                "source": "AKShare实时(东财)",
-            }
-            result["source"] = result["data"]["source"]
-            return result
-        else:
-            result["errors"]["akshare"] = "未找到该股(可能停牌)"
+        xq_code = f"{market.upper()}{code}"
+        df = ak.stock_individual_spot_xq(symbol=xq_code)
+        if df is not None and len(df) > 0:
+            kv = dict(zip(df["item"], df["value"])) if "item" in df.columns else {}
+            price = float(kv.get("现价", kv.get("最新价", 0)) or 0)
+            if price > 0:
+                result["data"] = {
+                    "name": str(kv.get("名称", "")), "price": price,
+                    "pct_change": float(kv.get("涨幅", 0) or 0),
+                    "change": float(kv.get("涨跌", 0) or 0),
+                    "high": float(kv.get("最高", 0) or 0),
+                    "low": float(kv.get("最低", 0) or 0),
+                    "open": float(kv.get("今开", 0) or 0),
+                    "source": "AKShare实时(雪球)",
+                }
+                result["source"] = result["data"]["source"]
+                return result
     except Exception as e:
-        result["errors"]["akshare"] = str(e)[:80]
+        result["errors"]["akshare_xq"] = str(e)[:80]
 
     return result
 
@@ -422,21 +453,21 @@ def selfcheck():
         tushare_status["checks"] = ts_checks
         tushare_status["available_dims"] = sum(1 for v in ts_checks.values() if v["ok"])
 
-    # 实时接口鉴权检测(盘中能力):验证 tushare 包 + token 注入是否打通
+    # 实时接口检测(盘中能力):走完整多源轮询,反映真实可用性
     realtime_status = {"tushare_pkg": ts.realtime_available()}
-    if ts.realtime_available() and ts.available():
-        try:
-            rt = ts.realtime_quote("000001", "sz")
-            realtime_status["ok"] = bool(rt and rt.get("price"))
-            realtime_status["source"] = rt.get("source") if rt else None
-        except Exception as e:
+    try:
+        rt = realtime("000001", "sz")
+        if rt.get("data") and rt["data"].get("price"):
+            realtime_status["ok"] = True
+            realtime_status["source"] = rt["source"]
+        else:
             realtime_status["ok"] = False
-            realtime_status["error"] = str(e)[:80]
-            realtime_status["hint"] = "实时接口鉴权失败。重跑 install.sh 会自动把 token 注入 tushare SDK"
-    else:
+            realtime_status["errors"] = rt.get("errors", {})
+            realtime_status["hint"] = ("实时为爬虫源,非交易时段或源站反爬时可能取不到;"
+                                       "交易时段内多次失败可重跑。收盘后数据不受影响。")
+    except Exception as e:
         realtime_status["ok"] = False
-        realtime_status["note"] = ("未装 tushare 包,盘中实时将降级到 AKShare 实时" if not ts.realtime_available()
-                                   else "未配置 token,实时接口不可用")
+        realtime_status["error"] = str(e)[:80]
 
     # AKShare 备源状态(按维度)
     dimensions = {

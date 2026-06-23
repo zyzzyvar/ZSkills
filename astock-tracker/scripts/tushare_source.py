@@ -185,6 +185,13 @@ def realtime_quote(code, market):
     返回标准化 dict。
     """
     import tushare as ts_sdk
+    # 确保浏览器 headers 注入生效(datasource 全局 patch 了 requests.Session,
+    # tushare 爬虫接口也走 requests,注入 UA 可降低 RemoteDisconnected 概率)
+    try:
+        import datasource  # noqa  触发 _install_browser_headers
+    except Exception:
+        pass
+    import time as _t, random as _r
 
     # 把 skill 的 token 注入 tushare SDK 的存储,使实时接口可鉴权
     tok = get_token()
@@ -195,34 +202,36 @@ def realtime_quote(code, market):
             pass
 
     tscode = _ts_code(code, market)
-    # 优先新浪源,失败切东财源
+    # 优先新浪源,失败切东财源;每源重试2次,带随机退避(应对 RemoteDisconnected)
     last_err = None
     for src in ("sina", "dc"):
-        try:
-            df = ts_sdk.realtime_quote(ts_code=tscode, src=src)
-            if df is not None and len(df) > 0:
-                r = df.iloc[0]
-                price = float(r["price"])
-                pre_close = float(r["pre_close"])
-                pct = round((price / pre_close - 1) * 100, 2) if pre_close > 0 else None
-                return {
-                    "name": r.get("name", ""),
-                    "price": price,
-                    "pre_close": pre_close,
-                    "open": float(r.get("open", 0) or 0),
-                    "high": float(r.get("high", 0) or 0),
-                    "low": float(r.get("low", 0) or 0),
-                    "pct_change": pct,
-                    "change": round(price - pre_close, 2),
-                    "volume_lots": round(float(r.get("volume", r.get("volumn", 0)) or 0) / 100, 0),
-                    "amount_wan": round(float(r.get("amount", 0) or 0) / 1e4, 1),
-                    "bid1": float(r.get("b1_p", 0) or 0),
-                    "ask1": float(r.get("a1_p", 0) or 0),
-                    "date": str(r.get("date", "")),
-                    "time": str(r.get("time", "")),
-                    "source": f"Tushare实时({src})",
-                }
-        except Exception as e:
-            last_err = str(e)[:80]
-            continue
+        for attempt in range(2):
+            try:
+                df = ts_sdk.realtime_quote(ts_code=tscode, src=src)
+                if df is not None and len(df) > 0:
+                    r = df.iloc[0]
+                    price = float(r["price"])
+                    pre_close = float(r["pre_close"])
+                    pct = round((price / pre_close - 1) * 100, 2) if pre_close > 0 else None
+                    return {
+                        "name": r.get("name", ""),
+                        "price": price,
+                        "pre_close": pre_close,
+                        "open": float(r.get("open", 0) or 0),
+                        "high": float(r.get("high", 0) or 0),
+                        "low": float(r.get("low", 0) or 0),
+                        "pct_change": pct,
+                        "change": round(price - pre_close, 2),
+                        "volume_lots": round(float(r.get("volume", r.get("volumn", 0)) or 0) / 100, 0),
+                        "amount_wan": round(float(r.get("amount", 0) or 0) / 1e4, 1),
+                        "bid1": float(r.get("b1_p", 0) or 0),
+                        "ask1": float(r.get("a1_p", 0) or 0),
+                        "date": str(r.get("date", "")),
+                        "time": str(r.get("time", "")),
+                        "source": f"Tushare实时({src})",
+                    }
+            except Exception as e:
+                last_err = str(e)[:80]
+                _t.sleep(_r.uniform(0.5, 1.2))  # 退避后重试
+                continue
     raise RuntimeError(f"Tushare实时报价失败: {last_err}")
