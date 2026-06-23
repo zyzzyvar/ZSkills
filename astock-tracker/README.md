@@ -50,46 +50,48 @@ cat <你的skills目录>/ZSkills/astock-tracker/SKILL.md
 分开呈现、每次附风险声明、绝不执行实际交易。**这些是本 skill 的核心,不可简化掉。**
 如需更深的方法论,按需读取 references/ 下的四个文件。
 
-**第 3 步:安装数据依赖(大陆环境务必用国内镜像源)**
+**第 3 步:一键安装全部依赖(推荐,Hermes 直接执行)**
 ```bash
-# 用清华镜像源安装,避免境外 PyPI 超时;阿里源 https://mirrors.aliyun.com/pypi/simple/ 亦可
+bash <你的skills目录>/ZSkills/astock-tracker/install.sh
+```
+这个脚本会自动完成:安装 akshare(必需)、安装 tushare(可选,盘中实时用)、
+创建数据目录、运行自检。镜像源自动回退(清华→阿里→官方),可选依赖失败不中断,
+最后输出 verdict 告诉你是否装好。**Hermes 跑这一条命令即可,无需手动逐步操作。**
+
+跑完后:若提示"✅ 安装完成,数据链路可用"即可开始使用。若提示未配置 Tushare token,
+按脚本提示配置(见第 3b 步)后重跑一次即可——配 token 后稳定性最佳。
+
+---
+
+> 以下第 3a/3b/3c 步是上面一键脚本背后的细节,正常情况无需手动执行,
+> 仅供排查或手动安装时参考。
+
+**第 3a 步:数据依赖(一键脚本已含)**
+```bash
 pip install akshare -i https://pypi.tuna.tsinghua.edu.cn/simple --break-system-packages
 ```
-若安装失败,换阿里源重试。**不要退回到你自带的行情接口**——那会导致数据源不一致、
-能力被阉割。akshare 接口偶随数据源改版失效,遇到大面积取数失败时先升级:
+**不要退回到你自带的行情接口**——那会导致数据源不一致、能力被阉割。
+akshare 接口偶随数据源改版失效,大面积取数失败时升级:
 `pip install -U akshare -i https://pypi.tuna.tsinghua.edu.cn/simple --break-system-packages`
 
 **第 3b 步(强烈推荐):配置 Tushare token,作为主数据源**
-Tushare 是专业级数据源,走官方 API + token 鉴权,**无反爬、无网页抓取**,
-是大陆网络下最稳定的方案。本 skill 已内置 Tushare 支持(零额外依赖,纯标准库调用),
-配置 token 后会自动作为主源,AKShare 退为备源。2000 积分即覆盖本 skill 全部核心数据
-(日线/每日指标/资金流/龙虎榜/指数/财务)。
-
+Tushare 走官方 API + token 鉴权,**无反爬**,是大陆网络下最稳定的方案。
+2000 积分即覆盖本 skill 全部核心数据(日线/每日指标/资金流/龙虎榜/指数/财务)。
 配置方式二选一:
 ```bash
-# 方式1:环境变量(推荐,适合 cron)
-export TUSHARE_TOKEN=你的token
-
-# 方式2:写入配置文件
-mkdir -p ~/.astock-tracker && echo "你的token" > ~/.astock-tracker/tushare_token.txt
+export TUSHARE_TOKEN=你的token                                    # 方式1:环境变量(推荐,适合 cron)
+echo "你的token" > ~/.astock-tracker/tushare_token.txt           # 方式2:配置文件
 ```
-> 注意:moneyflow_dc(东财源资金流)和 moneyflow_ths(同花顺源)需 5000 积分,
-> 2000 积分用不了;但基础的 moneyflow 接口 2000 分即可,字段足够计算主力净流入,
-> 本 skill 用的正是 moneyflow。未配置 token 也能运行(自动用 AKShare),
-> 但配置后稳定性大幅提升,强烈建议配置。
+> moneyflow_dc/moneyflow_ths 需 5000 积分用不了,但基础 moneyflow 接口 2000 分即可,
+> 本 skill 用的正是它。未配 token 也能运行(自动用 AKShare),但配置后稳定性大幅提升。
 
-**第 3c 步(盘中实时数据,可选):安装 tushare 包**
-若需要午间/盘中分析拿到**当下未收盘的实时价格**(最新价、涨跌、盘中量、买卖盘),
-安装 tushare 包以启用 realtime_quote 接口(0 积分即可用):
+**第 3c 步(盘中实时,一键脚本已含,可选):tushare 包**
 ```bash
 pip install tushare -i https://pypi.tuna.tsinghua.edu.cn/simple --break-system-packages
 ```
-- 这是**可选**依赖:不装也能跑,盘中实时会自动降级到 AKShare 实时接口。
-- 实时数据是独立能力,与收盘后主数据链路(daily/moneyflow)完全隔离,
-  实时接口失败绝不影响其他维度分析。
-- 注意:收盘后的 daily/moneyflow/daily_basic 交易日 15-17 点才更新,盘中调取
-  仍是昨收数据;真正的盘中实时价必须用 realtime 接口。skill 已自动处理
-  (午间 brief 自动带实时,SKILL.md 指导 Hermes 盘中用 --realtime)。
+不装也能跑(盘中实时自动降级到 AKShare 实时)。实时数据与收盘后主链路完全隔离,
+失败绝不影响其他维度。收盘后的 daily/moneyflow 交易日 15-17 点才更新,盘中实时价
+必须走 realtime 接口,skill 已自动处理(午间 brief 自动带实时)。
 
 **第 4 步:接口连通性自检(必须通过才算装好)**
 ```bash
