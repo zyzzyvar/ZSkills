@@ -34,7 +34,56 @@ def _to_df(records):
     return pd.DataFrame(records)
 
 
-def snapshot(code, market, lookback):
+def realtime(code, market):
+    """
+    盘中实时报价(独立能力,不影响收盘后数据链路)。
+    Tushare realtime_quote(主) → AKShare 实时(备)。两者都失败才报错。
+    """
+    result = {"code": code, "market": market, "as_of": _now(), "data": None,
+              "source": None, "errors": {}}
+    # 主源:Tushare 实时(需 tushare 包,0积分可用)
+    if ts.realtime_available():
+        try:
+            result["data"] = ts.realtime_quote(code, market)
+            result["source"] = result["data"]["source"]
+            return result
+        except Exception as e:
+            result["errors"]["tushare"] = str(e)[:80]
+    else:
+        result["errors"]["tushare"] = "未安装 tushare 包(pip install tushare),已尝试备源"
+
+    # 备源:AKShare 实时快照
+    try:
+        import akshare as ak
+        df = ak.stock_zh_a_spot_em()
+        df["代码"] = df["代码"].astype(str).str.zfill(6)
+        row = df[df["代码"] == code]
+        if len(row) > 0:
+            r = row.iloc[0]
+            result["data"] = {
+                "name": r.get("名称", ""),
+                "price": float(r.get("最新价", 0) or 0),
+                "pct_change": float(r.get("涨跌幅", 0) or 0),
+                "change": float(r.get("涨跌额", 0) or 0),
+                "high": float(r.get("最高", 0) or 0),
+                "low": float(r.get("最低", 0) or 0),
+                "open": float(r.get("今开", 0) or 0),
+                "volume_lots": float(r.get("成交量", 0) or 0),
+                "amount_wan": round(float(r.get("成交额", 0) or 0) / 1e4, 1),
+                "turnover_rate": float(r.get("换手率", 0) or 0),
+                "source": "AKShare实时(东财)",
+            }
+            result["source"] = result["data"]["source"]
+            return result
+        else:
+            result["errors"]["akshare"] = "未找到该股(可能停牌)"
+    except Exception as e:
+        result["errors"]["akshare"] = str(e)[:80]
+
+    return result
+
+
+def snapshot(code, market, lookback, with_realtime=False):
     import akshare as ak
     import pandas as pd
 
@@ -44,6 +93,15 @@ def snapshot(code, market, lookback):
     result = {"code": code, "market": market, "as_of": _now(),
               "data": {}, "unavailable": [], "data_sources": {}, "stale_warnings": [],
               "primary_source": "Tushare" if ts.available() else "AKShare(未配置Tushare token)"}
+
+    # ---- 0. 盘中实时报价(可选,独立能力,失败不影响其他维度) ----
+    if with_realtime:
+        rt = realtime(code, market)
+        if rt["data"]:
+            result["data"]["realtime"] = rt["data"]
+            result["data_sources"]["realtime"] = rt["source"]
+        else:
+            result["unavailable"].append({"realtime": rt["errors"]})
 
     # ---- 1. 历史K线:Tushare(主) → 东财 → 腾讯 → 新浪 ----
     def _hist_ts():
@@ -404,12 +462,18 @@ def main():
     s.add_argument("--code", required=True)
     s.add_argument("--market", required=True, choices=["sh", "sz", "bj"])
     s.add_argument("--lookback", type=int, default=20)
+    s.add_argument("--realtime", action="store_true", help="附带盘中实时报价(盘中分析用)")
     sub.add_parser("market")
+    rt = sub.add_parser("realtime", help="盘中实时报价(独立命令)")
+    rt.add_argument("--code", required=True)
+    rt.add_argument("--market", required=True, choices=["sh", "sz", "bj"])
     nw = sub.add_parser("news"); nw.add_argument("--code", required=True)
     sub.add_parser("selfcheck")
     args = p.parse_args()
     if args.cmd == "snapshot":
-        _out(snapshot(args.code, args.market, args.lookback))
+        _out(snapshot(args.code, args.market, args.lookback, with_realtime=args.realtime))
+    elif args.cmd == "realtime":
+        _out(realtime(args.code, args.market))
     elif args.cmd == "market":
         _out(market_sentiment())
     elif args.cmd == "news":

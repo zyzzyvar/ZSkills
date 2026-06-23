@@ -78,6 +78,19 @@ mkdir -p ~/.astock-tracker && echo "你的token" > ~/.astock-tracker/tushare_tok
 > 本 skill 用的正是 moneyflow。未配置 token 也能运行(自动用 AKShare),
 > 但配置后稳定性大幅提升,强烈建议配置。
 
+**第 3c 步(盘中实时数据,可选):安装 tushare 包**
+若需要午间/盘中分析拿到**当下未收盘的实时价格**(最新价、涨跌、盘中量、买卖盘),
+安装 tushare 包以启用 realtime_quote 接口(0 积分即可用):
+```bash
+pip install tushare -i https://pypi.tuna.tsinghua.edu.cn/simple --break-system-packages
+```
+- 这是**可选**依赖:不装也能跑,盘中实时会自动降级到 AKShare 实时接口。
+- 实时数据是独立能力,与收盘后主数据链路(daily/moneyflow)完全隔离,
+  实时接口失败绝不影响其他维度分析。
+- 注意:收盘后的 daily/moneyflow/daily_basic 交易日 15-17 点才更新,盘中调取
+  仍是昨收数据;真正的盘中实时价必须用 realtime 接口。skill 已自动处理
+  (午间 brief 自动带实时,SKILL.md 指导 Hermes 盘中用 --realtime)。
+
 **第 4 步:接口连通性自检(必须通过才算装好)**
 ```bash
 python3 <你的skills目录>/ZSkills/astock-tracker/scripts/fetch.py selfcheck

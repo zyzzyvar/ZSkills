@@ -61,8 +61,12 @@ def main():
     hold_map = {h["code"]: h for h in full.get("holdings", [])}
 
     for s in stocks:
-        snap = _run(["fetch.py", "snapshot", "--code", s["code"],
-                     "--market", s["market"], "--lookback", str(args.lookback)])
+        # 午间(noon)场景附带盘中实时报价;盘前/盘后用收盘后数据即可
+        snap_args = ["fetch.py", "snapshot", "--code", s["code"],
+                     "--market", s["market"], "--lookback", str(args.lookback)]
+        if args.session == "noon":
+            snap_args.append("--realtime")
+        snap = _run(snap_args)
         item = {"code": s["code"], "name": s["name"], "snapshot": snap}
         if s["code"] in hold_map:
             h = hold_map[s["code"]]

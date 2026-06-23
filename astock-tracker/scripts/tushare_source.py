@@ -160,3 +160,56 @@ INDEX_CODES = {
     "创业板指": "399006.SZ",
     "科创50": "000688.SH",
 }
+
+
+def realtime_available():
+    """实时报价需要 tushare 包(≥1.3.3),按需检测,不影响主链路。"""
+    try:
+        import tushare  # noqa
+        return True
+    except Exception:
+        return False
+
+
+def realtime_quote(code, market):
+    """
+    盘中实时报价(当下未收盘的最新价/涨跌/盘中量/买卖五档)。
+    用 tushare 的 realtime_quote 爬虫接口(0积分开放,数据来自新浪/东财)。
+
+    这是独立于主数据链路的能力:tushare 包未装或失败时抛异常,
+    由上层降级到 AKShare 实时接口,绝不影响收盘后数据(daily/moneyflow等)的稳定性。
+    返回标准化 dict。
+    """
+    import tushare as ts_sdk
+    tscode = _ts_code(code, market)
+    # 优先新浪源,失败切东财源
+    last_err = None
+    for src in ("sina", "dc"):
+        try:
+            df = ts_sdk.realtime_quote(ts_code=tscode, src=src)
+            if df is not None and len(df) > 0:
+                r = df.iloc[0]
+                price = float(r["price"])
+                pre_close = float(r["pre_close"])
+                pct = round((price / pre_close - 1) * 100, 2) if pre_close > 0 else None
+                return {
+                    "name": r.get("name", ""),
+                    "price": price,
+                    "pre_close": pre_close,
+                    "open": float(r.get("open", 0) or 0),
+                    "high": float(r.get("high", 0) or 0),
+                    "low": float(r.get("low", 0) or 0),
+                    "pct_change": pct,
+                    "change": round(price - pre_close, 2),
+                    "volume_lots": round(float(r.get("volume", r.get("volumn", 0)) or 0) / 100, 0),
+                    "amount_wan": round(float(r.get("amount", 0) or 0) / 1e4, 1),
+                    "bid1": float(r.get("b1_p", 0) or 0),
+                    "ask1": float(r.get("a1_p", 0) or 0),
+                    "date": str(r.get("date", "")),
+                    "time": str(r.get("time", "")),
+                    "source": f"Tushare实时({src})",
+                }
+        except Exception as e:
+            last_err = str(e)[:80]
+            continue
+    raise RuntimeError(f"Tushare实时报价失败: {last_err}")

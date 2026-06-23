@@ -31,11 +31,24 @@ python3 scripts/portfolio.py hold-update --code 600519 --shares 200 --cost 1655.
 python3 scripts/portfolio.py watch-add --code 300750 --name 宁德时代 --note "等回调"
 
 # 数据采集(真实行情,需联网+akshare)
-python3 scripts/fetch.py snapshot --code 600519 --market sh --lookback 20  # 单股全维度
+python3 scripts/fetch.py snapshot --code 600519 --market sh --lookback 20  # 单股全维度(收盘后数据)
+python3 scripts/fetch.py snapshot --code 600519 --market sh --realtime     # 附带盘中实时报价
+python3 scripts/fetch.py realtime --code 600519 --market sh   # 仅要盘中实时价(快)
 python3 scripts/fetch.py market              # 大盘指数+资金面+北向情绪
 python3 scripts/fetch.py news --code 600519  # 个股新闻
 python3 scripts/fetch.py selfcheck           # 接口连通性自检(部署后先跑)
 ```
+
+**盘中实时 vs 收盘后数据(重要,直接影响盘中建议的准确性)**:
+- `daily`/`moneyflow`/`daily_basic` 等主数据**收盘后才更新**(交易日15-17点)。
+  也就是说盘中(尤其午间11:30前后)调 snapshot,价格和资金流仍是**昨日收盘**的值,
+  不是当下实时值。这点必须清醒,否则会拿昨天的数据当今天讲。
+- **午间或任何盘中分析,务必用 `--realtime` 或 `realtime` 命令**取当下实时价
+  (最新价、涨跌、盘中量、买卖盘)。实时数据走 Tushare realtime_quote(0积分可用),
+  失败自动降级 AKShare 实时,这是独立能力,不影响收盘后数据链路。
+- 实时报价里 `as_of`/`time` 字段是数据时间;盘中分析时引用价格要说"截至XX:XX",
+  让用户知道这是动态变化的盘中价。
+- 盘前、盘后分析用收盘后数据即可,无需 --realtime(盘前看昨收定计划,盘后看今收复盘)。
 
 snapshot 返回的 JSON 包含:price(价格与均线/MACD/量比)、recent_klines(近期K线)、
 fund_flow(主力资金近期流向与趋势)、northbound(北向持股)、lhb_recent(龙虎榜)、

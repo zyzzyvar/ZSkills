@@ -166,3 +166,33 @@ Hermes 分析时会明确告诉你这是缓存、可能不是最新。
 临时移除 token(`unset TUSHARE_TOKEN` 且删除 token 文件)再 selfcheck。
 ✅ 合格:`tushare.configured: false`,verdict 变为"⚠ 可用但降级",
 snapshot 自动改用 AKShare,功能不中断(只是稳定性下降)。
+
+---
+
+## G 组:盘中实时数据(装 tushare 包后)
+
+**G1 · 实时报价可用**
+盘中(交易时段)运行 `python3 scripts/fetch.py realtime --code 600519 --market sh`
+✅ 合格:返回当下最新价、涨跌幅、盘中量、买卖一档,`source` 显示"Tushare实时(sina)";
+价格与你在行情软件看到的当下价基本一致(秒级延迟正常)。
+
+**G2 · 盘中 snapshot 带实时**
+盘中运行 `python3 scripts/fetch.py snapshot --code 600519 --market sh --realtime`
+✅ 合格:data 中含 `realtime` 字段(当下实时价),同时 price 字段是昨收日线
+(两者并存,Hermes 应优先用 realtime 讲盘中)。
+
+**G3 · 隔离性(关键,不影响稳定性)**
+不装 tushare 包,运行 `python3 scripts/fetch.py realtime --code 600519 --market sh`
+✅ 合格:自动降级到 AKShare 实时,仍返回实时价(source 显示"AKShare实时");
+即使两者都失败也不崩溃,errors 里说明原因。普通 snapshot(不带 --realtime)
+完全不受影响,收盘后数据照常。
+
+**G4 · 午间 brief 自动带实时**
+运行 `python3 scripts/daily_brief.py --session noon`
+✅ 合格:生成的 brief 中每只股票的 snapshot 含 realtime 字段;
+而 pre/post 场景不带(节省调用、盘前盘后用收盘数据)。
+
+**G5 · Hermes 盘中分析用实时价**
+午间让 Hermes 分析持仓。
+✅ 合格:引用的是当下实时价并标注时间(如"截至11:20,茅台1718,涨1.4%"),
+不是拿昨收当今天讲。
