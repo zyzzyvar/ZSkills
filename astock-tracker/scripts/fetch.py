@@ -422,6 +422,22 @@ def selfcheck():
         tushare_status["checks"] = ts_checks
         tushare_status["available_dims"] = sum(1 for v in ts_checks.values() if v["ok"])
 
+    # 实时接口鉴权检测(盘中能力):验证 tushare 包 + token 注入是否打通
+    realtime_status = {"tushare_pkg": ts.realtime_available()}
+    if ts.realtime_available() and ts.available():
+        try:
+            rt = ts.realtime_quote("000001", "sz")
+            realtime_status["ok"] = bool(rt and rt.get("price"))
+            realtime_status["source"] = rt.get("source") if rt else None
+        except Exception as e:
+            realtime_status["ok"] = False
+            realtime_status["error"] = str(e)[:80]
+            realtime_status["hint"] = "实时接口鉴权失败。重跑 install.sh 会自动把 token 注入 tushare SDK"
+    else:
+        realtime_status["ok"] = False
+        realtime_status["note"] = ("未装 tushare 包,盘中实时将降级到 AKShare 实时" if not ts.realtime_available()
+                                   else "未配置 token,实时接口不可用")
+
     # AKShare 备源状态(按维度)
     dimensions = {
         "历史K线": [
@@ -464,12 +480,14 @@ def selfcheck():
         "as_of": _now(),
         "akshare_version": ak.__version__,
         "tushare": tushare_status,
+        "realtime": realtime_status,
         "akshare_backup": ak_results,
         "usable": usable,
         "verdict": verdict,
         "note": "Tushare 是主源(官方API+token,无反爬,最稳)。只要 Tushare 核心维度可用即正常工作;"
                 "AKShare 作为备源补充千股千评、个股新闻等 Tushare 未覆盖的维度。"
-                "若 Tushare 未配置 token,会自动降级到 AKShare。",
+                "若 Tushare 未配置 token,会自动降级到 AKShare。"
+                "realtime 字段反映盘中实时接口是否打通(午间分析需要)。",
     }
 
 

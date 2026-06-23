@@ -55,15 +55,32 @@ echo "[3/4] 准备数据目录..."
 DATA_DIR="${ASTOCK_DIR:-$HOME/.astock-tracker}"
 mkdir -p "$DATA_DIR"
 echo "  数据目录: $DATA_DIR"
+TOKEN_VAL=""
 if [ -n "${TUSHARE_TOKEN:-}" ]; then
   echo "  ✓ 检测到环境变量 TUSHARE_TOKEN"
+  TOKEN_VAL="$TUSHARE_TOKEN"
 elif [ -f "$DATA_DIR/tushare_token.txt" ]; then
   echo "  ✓ 检测到 token 文件 $DATA_DIR/tushare_token.txt"
+  TOKEN_VAL="$(cat "$DATA_DIR/tushare_token.txt" | tr -d '[:space:]')"
 else
   echo "  ⚠ 未配置 Tushare token。skill 仍可用(自动走 akshare),但配置后更稳定。"
   echo "    配置方法(二选一):"
   echo "      export TUSHARE_TOKEN=你的token"
   echo "      echo '你的token' > $DATA_DIR/tushare_token.txt"
+fi
+
+# 关键:把 token 同步注入 tushare SDK 自己的存储(~/.tushare.csv),
+# 否则盘中实时接口 realtime_quote 走 SDK 鉴权时读不到 token,会提示"需配置凭证"。
+if [ -n "$TOKEN_VAL" ]; then
+  $PY -c "
+import sys
+try:
+    import tushare as ts
+    ts.set_token('$TOKEN_VAL'.strip())
+    print('  ✓ token 已同步注入 tushare SDK(收盘后数据与盘中实时接口均可鉴权)')
+except Exception as e:
+    print('  ⚠ tushare SDK 未安装,实时接口暂不可用(收盘后数据不受影响):', str(e)[:50])
+" 2>/dev/null
 fi
 
 # 4. 自检

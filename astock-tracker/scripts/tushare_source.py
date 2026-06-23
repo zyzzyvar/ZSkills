@@ -176,11 +176,24 @@ def realtime_quote(code, market):
     盘中实时报价(当下未收盘的最新价/涨跌/盘中量/买卖五档)。
     用 tushare 的 realtime_quote 爬虫接口(0积分开放,数据来自新浪/东财)。
 
+    关键:realtime_quote 走 tushare SDK 自己的 token 存储(~/.tushare.csv),
+    不读 skill 的 token 文件。所以这里先把 skill 已配置的 token 用 set_token
+    注入 SDK,实现"一个 token 两处通用",用户无需额外配置。
+
     这是独立于主数据链路的能力:tushare 包未装或失败时抛异常,
     由上层降级到 AKShare 实时接口,绝不影响收盘后数据(daily/moneyflow等)的稳定性。
     返回标准化 dict。
     """
     import tushare as ts_sdk
+
+    # 把 skill 的 token 注入 tushare SDK 的存储,使实时接口可鉴权
+    tok = get_token()
+    if tok:
+        try:
+            ts_sdk.set_token(tok)
+        except Exception:
+            pass
+
     tscode = _ts_code(code, market)
     # 优先新浪源,失败切东财源
     last_err = None
