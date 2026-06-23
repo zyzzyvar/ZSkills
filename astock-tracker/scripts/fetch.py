@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from datasource import robust_fetch, code_with_market
+import tushare_source as ts
 
 
 def _out(o): print(json.dumps(o, ensure_ascii=False, indent=2, default=str))
@@ -41,9 +42,12 @@ def snapshot(code, market, lookback):
     start = (datetime.now() - timedelta(days=lookback * 2 + 90)).strftime("%Y%m%d")
     codes = code_with_market(code, market)
     result = {"code": code, "market": market, "as_of": _now(),
-              "data": {}, "unavailable": [], "data_sources": {}, "stale_warnings": []}
+              "data": {}, "unavailable": [], "data_sources": {}, "stale_warnings": [],
+              "primary_source": "Tushare" if ts.available() else "AKShare(未配置Tushare token)"}
 
-    # ---- 1. 历史K线:东财 → 腾讯 → 新浪 三源降级 ----
+    # ---- 1. 历史K线:Tushare(主) → 东财 → 腾讯 → 新浪 ----
+    def _hist_ts():
+        return _to_df(ts.hist_klines(code, market, start, today))
     def _hist_em():
         return ak.stock_zh_a_hist(symbol=code, period="daily",
                                   start_date=start, end_date=today, adjust="qfq")
@@ -57,9 +61,11 @@ def snapshot(code, market, lookback):
                                   "high": "最高", "low": "最低", "volume": "成交量",
                                   "amount": "成交额"})
 
-    hist_r = robust_fetch(f"hist:{code}:{lookback}", [
-        ("东财", _hist_em, True), ("腾讯", _hist_tx, False), ("新浪", _hist_sina, False),
-    ])
+    hist_sources = []
+    if ts.available():
+        hist_sources.append(("Tushare", _hist_ts, False))
+    hist_sources += [("东财", _hist_em, True), ("腾讯", _hist_tx, False), ("新浪", _hist_sina, False)]
+    hist_r = robust_fetch(f"hist:{code}:{lookback}", hist_sources)
     result["data_sources"]["klines"] = hist_r["source"]
     if hist_r["from_cache"]:
         result["stale_warnings"].append(f"K线为缓存数据(约{hist_r.get('cache_age_hours')}小时前)")
@@ -109,8 +115,9 @@ def snapshot(code, market, lookback):
     else:
         result["unavailable"].append({"price/klines": hist_r["errors"]})
 
-    # ---- 2. 个股资金流:东财(完整历史) → 同花顺(当日即时,降级兜底) ----
-    # 东财走 push2his(反爬较严);同花顺走 10jqka,数据源独立,作为备源绕开东财反爬。
+    # ---- 2. 个股资金流:Tushare moneyflow(主,无反爬) → 东财 → 同花顺 ----
+    def _fund_ts():
+        return _to_df(ts.moneyflow(code, market, start, today))
     def _fund_em():
         return ak.stock_individual_fund_flow(stock=code, market=market)
 
@@ -123,18 +130,20 @@ def snapshot(code, market, lookback):
         if len(row) == 0:
             raise Exception("同花顺即时资金流中未找到该股(可能停牌或非当日交易)")
         r = row.iloc[0]
-        # 同花顺"净额"单位为元/万元视版本而定,统一尝试解析为万元
         net = r.get("净额", r.get("资金流入净额", 0))
         try:
             net_val = float(str(net).replace("亿", "e8").replace("万", "e4").replace("元", ""))
         except Exception:
             net_val = float(pd.to_numeric(net, errors="coerce") or 0)
-        # 包装成与东财历史相同的结构(仅当日一行)
         return pd.DataFrame([{"日期": datetime.now().strftime("%Y-%m-%d"),
                               "主力净流入-净额": net_val,
                               "主力净流入-净占比": float(pd.to_numeric(r.get("净占比", 0), errors="coerce") or 0)}])
 
-    fund_r = robust_fetch(f"fund:{code}", [("东财", _fund_em, True), ("同花顺", _fund_ths, False)])
+    fund_sources = []
+    if ts.available():
+        fund_sources.append(("Tushare", _fund_ts, False))
+    fund_sources += [("东财", _fund_em, True), ("同花顺", _fund_ths, False)]
+    fund_r = robust_fetch(f"fund:{code}", fund_sources)
     result["data_sources"]["fund_flow"] = fund_r["source"]
     if fund_r["from_cache"]:
         result["stale_warnings"].append(f"资金流为缓存数据(约{fund_r.get('cache_age_hours')}小时前)")
@@ -185,30 +194,73 @@ def snapshot(code, market, lookback):
     else:
         result["unavailable"].append({"comment": cmt_r["errors"]})
 
-    # ---- 5. 财务摘要:同花顺 → 东财 ----
+    # ---- 5. 财务:Tushare fina_indicator(主) → 同花顺 → 东财 ----
+    def _fin_ts():
+        rows = ts.fina_indicator(code, market)
+        if not rows:
+            raise Exception("Tushare财务无数据")
+        return _to_df(rows)
     def _fin_ths():
         return ak.stock_financial_abstract_ths(symbol=code, indicator="按报告期")
     def _fin_em():
         return ak.stock_financial_abstract(symbol=code)
-    fin_r = robust_fetch(f"fin:{code}", [("同花顺", _fin_ths, False), ("东财", _fin_em, True)], cache_hours=720)
+    fin_sources = []
+    if ts.available():
+        fin_sources.append(("Tushare", _fin_ts, False))
+    fin_sources += [("同花顺", _fin_ths, False), ("东财", _fin_em, True)]
+    fin_r = robust_fetch(f"fin:{code}", fin_sources, cache_hours=720)
     result["data_sources"]["financials"] = fin_r["source"]
     if fin_r["ok"] and fin_r["data"]:
-        result["data"]["financials"] = fin_r["data"][-2:]
+        result["data"]["financials"] = fin_r["data"][-4:] if fin_r["source"] == "Tushare" else fin_r["data"][-2:]
     else:
         result["unavailable"].append({"financials": fin_r["errors"]})
 
+    # ---- 5b. 每日指标(Tushare 优势:量比/换手/PE/PB/市值) ----
+    if ts.available():
+        try:
+            db = ts.daily_basic(code, market)
+            if db:
+                result["data"]["daily_basic"] = {
+                    "turnover_rate": db.get("turnover_rate"),
+                    "volume_ratio": db.get("volume_ratio"),
+                    "pe_ttm": db.get("pe_ttm"), "pb": db.get("pb"),
+                    "total_mv_yi": round(float(db["total_mv"]) / 1e4, 1) if db.get("total_mv") else None,
+                    "circ_mv_yi": round(float(db["circ_mv"]) / 1e4, 1) if db.get("circ_mv") else None,
+                }
+                result["data_sources"]["daily_basic"] = "Tushare"
+        except Exception as e:
+            result["unavailable"].append({"daily_basic": str(e)[:60]})
+
     return result
-
-
-def market_sentiment():
     import akshare as ak
     result = {"as_of": _now(), "data": {}, "unavailable": [], "data_sources": {}, "stale_warnings": []}
 
+    # 指数:Tushare index_daily(主) → 东财 → 新浪
+    def _idx_ts():
+        import pandas as pd
+        rows = []
+        end = datetime.now().strftime("%Y%m%d")
+        st = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
+        for name, icode in ts.INDEX_CODES.items():
+            try:
+                d = ts.index_daily(icode, st, end)
+                if d:
+                    latest = d[0]  # 倒序,最新在前
+                    rows.append({"名称": name, "最新价": latest["close"], "涨跌幅": latest.get("pct_chg", 0)})
+            except Exception:
+                continue
+        if not rows:
+            raise Exception("Tushare指数无数据")
+        return pd.DataFrame(rows)
     def _idx_em():
         return ak.stock_zh_index_spot_em(symbol="沪深重要指数")
     def _idx_sina():
         return ak.stock_zh_index_spot_sina()
-    idx_r = robust_fetch("indices", [("东财", _idx_em, True), ("新浪", _idx_sina, False)], cache_hours=12)
+    idx_sources = []
+    if ts.available():
+        idx_sources.append(("Tushare", _idx_ts, False))
+    idx_sources += [("东财", _idx_em, True), ("新浪", _idx_sina, False)]
+    idx_r = robust_fetch("indices", idx_sources, cache_hours=12)
     result["data_sources"]["indices"] = idx_r["source"]
     if idx_r["from_cache"]:
         result["stale_warnings"].append(f"指数为缓存数据(约{idx_r.get('cache_age_hours')}小时前)")
@@ -272,7 +324,29 @@ def news(code):
 def selfcheck():
     import akshare as ak
     from datasource import _throttle_em
-    # 按"维度"组织,每个维度列出 [主源, 备源...],只要有一个通过该维度即可用
+    today = datetime.now().strftime("%Y%m%d")
+    st = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
+
+    # Tushare 状态(主源)
+    tushare_status = {"configured": ts.available()}
+    if ts.available():
+        ts_checks = {}
+        ts_probes = {
+            "日线行情": lambda: ts.hist_klines("000001", "sz", st, today),
+            "个股资金流": lambda: ts.moneyflow("000001", "sz", st, today),
+            "每日指标": lambda: [ts.daily_basic("000001", "sz")],
+            "指数行情": lambda: ts.index_daily("000001.SH", st, today),
+        }
+        for name, fn in ts_probes.items():
+            try:
+                d = fn()
+                ts_checks[name] = {"ok": bool(d), "rows": len(d) if d else 0}
+            except Exception as e:
+                ts_checks[name] = {"ok": False, "error": str(e)[:80]}
+        tushare_status["checks"] = ts_checks
+        tushare_status["available_dims"] = sum(1 for v in ts_checks.values() if v["ok"])
+
+    # AKShare 备源状态(按维度)
     dimensions = {
         "历史K线": [
             ("东财", lambda: ak.stock_zh_a_hist(symbol="000001", period="daily",
@@ -280,57 +354,46 @@ def selfcheck():
             ("腾讯", lambda: ak.stock_zh_a_hist_tx(symbol="sz000001",
                 start_date="20260601", end_date="20260611"), False),
         ],
-        "个股资金流": [
-            ("东财", lambda: ak.stock_individual_fund_flow(stock="000001", market="sz"), True),
-            ("同花顺", lambda: ak.stock_fund_flow_individual(symbol="即时"), False),
-        ],
-        "大盘资金流": [
-            ("东财", lambda: ak.stock_market_fund_flow(), True),
-            ("同花顺", lambda: ak.stock_fund_flow_big_deal(), False),
-        ],
-        "指数行情": [
-            ("东财", lambda: ak.stock_zh_index_spot_em(symbol="沪深重要指数"), True),
-            ("新浪", lambda: ak.stock_zh_index_spot_sina(), False),
-        ],
-        "千股千评": [
-            ("东财", lambda: ak.stock_comment_detail_zhpj_lspf_em(symbol="000001"), True),
-        ],
-        "个股新闻": [
-            ("东财", lambda: ak.stock_news_em(symbol="000001"), True),
-        ],
+        "千股千评": [("东财", lambda: ak.stock_comment_detail_zhpj_lspf_em(symbol="000001"), True)],
+        "个股新闻": [("东财", lambda: ak.stock_news_em(symbol="000001"), True)],
     }
-    dim_results = {}
+    ak_results = {}
     for dim, sources in dimensions.items():
-        dim_ok = False
-        used = None
-        tried = []
+        dim_ok, used = False, None
         for name, fn, is_em in sources:
             try:
                 if is_em:
                     _throttle_em()
                 df = fn()
                 if df is not None and len(df) > 0:
-                    dim_ok = True
-                    used = name
+                    dim_ok, used = True, name
                     break
-                tried.append(f"{name}:空")
-            except Exception as e:
-                tried.append(f"{name}:{str(e)[:40]}")
-        dim_results[dim] = {"available": dim_ok, "source": used, "tried": tried}
+            except Exception:
+                continue
+        ak_results[dim] = {"available": dim_ok, "source": used}
 
-    ok_dims = sum(1 for v in dim_results.values() if v["available"])
-    total = len(dimensions)
+    # 综合判定:Tushare 配好且核心维度通 → 系统可用(AKShare 仅补充千股千评/新闻)
+    ts_core_ok = ts.available() and tushare_status.get("available_dims", 0) >= 3
+    ak_core_ok = ak_results["历史K线"]["available"]
+    usable = ts_core_ok or ak_core_ok
+
+    if ts_core_ok:
+        verdict = "✅ 可用:Tushare 主源正常,数据稳定(无反爬风险)"
+    elif ak_core_ok:
+        verdict = "⚠ 可用但降级:Tushare 不可用,正使用 AKShare 备源(建议检查 token)"
+    else:
+        verdict = "❌ 不可用:Tushare 与 AKShare 核心维度均失败,请检查 token 与网络"
+
     return {
         "as_of": _now(),
         "akshare_version": ak.__version__,
-        "dimensions_available": f"{ok_dims}/{total}",
-        "all_critical_ok": all(dim_results[d]["available"] for d in ["历史K线", "个股资金流", "指数行情"]),
-        "verdict": ("✅ 可用:核心维度均有可用数据源" if ok_dims >= 5 and
-                    dim_results["历史K线"]["available"] and dim_results["个股资金流"]["available"]
-                    else "⚠ 部分维度全部源失败,请查看 details 并考虑升级 akshare"),
-        "details": dim_results,
-        "note": "判定标准是'每个维度至少一个源可用',而非接口总数。"
-                "某维度主源(东财)失败但备源(同花顺/腾讯/新浪)通过,即视为该维度可用。",
+        "tushare": tushare_status,
+        "akshare_backup": ak_results,
+        "usable": usable,
+        "verdict": verdict,
+        "note": "Tushare 是主源(官方API+token,无反爬,最稳)。只要 Tushare 核心维度可用即正常工作;"
+                "AKShare 作为备源补充千股千评、个股新闻等 Tushare 未覆盖的维度。"
+                "若 Tushare 未配置 token,会自动降级到 AKShare。",
     }
 
 

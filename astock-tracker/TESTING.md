@@ -9,21 +9,19 @@
 
 ## A 组:数据底座(必须先全过,否则后面都是空中楼阁)
 
-**A1 · 接口自检(按维度判定,不是按接口数)**
+**A1 · 接口自检(看 verdict 与 usable)**
 运行 `python3 scripts/fetch.py selfcheck`
-✅ 合格:`verdict` 显示"✅ 可用",或 `dimensions_available` 达到 5/6 及以上,
-**且历史K线、个股资金流、指数行情三个核心维度可用**(`all_critical_ok: true`)。
+✅ 合格:`usable: true`。最佳是 `verdict` 显示"✅ 可用:Tushare 主源正常"
+(`tushare.configured: true` 且 `tushare.available_dims >= 3`)。
 
-**重要:判定看维度,不看接口总数。** 本 skill 每个维度配了多个数据源,
-某个维度的主源(如东财)被反爬拦截、但备源(同花顺/腾讯/新浪)通过,
-该维度依然可用,**这是正常的,不是故障**。例如个股资金流的东财源失败、
-同花顺源通过,selfcheck 的 details 里会显示 `"source": "同花顺"`,即视为通过。
+**判定标准:只要 usable 为 true 就继续。** 三种情况:
+- Tushare 主源正常 → 最佳,数据稳定无反爬,这是配了 token 的预期状态
+- Tushare 不可用但 AKShare 历史K线通 → 降级可用,检查 token 是否配置正确
+- 两者核心维度都失败 → 才是真不可用,检查 token 与网络
 
-只有当**某个核心维度的所有源都失败**时(details 里该维度 `available: false`),
-才需要排查:先 `pip install -U akshare -i https://pypi.tuna.tsinghua.edu.cn/simple --break-system-packages`
-升级版本(接口失效多因 akshare 滞后),再不行才检查网络。
-**不要因为某个东财接口被反爬就判定整个 skill 不可用而停止安装**——
-那正是多源降级要解决的问题。
+**不要因为某个 AKShare 备源接口失败就停止安装。** Tushare 配好后,
+AKShare 只用于补充千股千评、新闻等少数维度,个别失败不影响主体功能。
+若 Tushare 报权限错误,确认积分≥2000 且 token 正确。
 
 **A2 · 真实取数**
 运行 `python3 scripts/fetch.py snapshot --code 600519 --market sh`
@@ -146,3 +144,25 @@ Hermes 分析时会明确告诉你这是缓存、可能不是最新。
 任意 snapshot 分析后,查看 Hermes 是否会在数据存疑时说明来源。
 ✅ 合格:当使用备源或缓存时,分析中有相应说明(如"指数数据来自新浪备用源");
 盘中遇到缓存价格时会提示不据此做激进即时判断。
+
+---
+
+## F 组:Tushare 主源(配置 token 后)
+
+**F1 · token 生效**
+运行 `python3 scripts/fetch.py selfcheck`
+✅ 合格:`tushare.configured: true`,`tushare.checks` 里日线/资金流/每日指标/指数多数 ok。
+
+**F2 · 主源走 Tushare**
+运行 `python3 scripts/fetch.py snapshot --code 600519 --market sh`
+✅ 合格:`primary_source: Tushare`;`data_sources.klines` 和 `data_sources.fund_flow`
+均显示 "Tushare";数据中含 `daily_basic`(换手/量比/PE/PB/市值,这是 Tushare 的增强)。
+
+**F3 · 资金流稳定(对比之前的反爬问题)**
+连续多次 snapshot 不同股票的资金流。
+✅ 合格:不再出现东财反爬的 RemoteDisconnected;资金流维度稳定走 Tushare moneyflow。
+
+**F4 · 无 token 时优雅降级**
+临时移除 token(`unset TUSHARE_TOKEN` 且删除 token 文件)再 selfcheck。
+✅ 合格:`tushare.configured: false`,verdict 变为"⚠ 可用但降级",
+snapshot 自动改用 AKShare,功能不中断(只是稳定性下降)。

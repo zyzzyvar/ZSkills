@@ -11,6 +11,7 @@ astock-tracker/
 ├── SKILL.md                       # 专家分析框架与工作守则
 ├── scripts/
 │   ├── portfolio.py               # 持仓/关注管理(零依赖)
+│   ├── tushare_source.py          # Tushare 主数据源(零SDK,标准库HTTP)
 │   ├── datasource.py              # 数据源韧性层(多源降级/限频/缓存)
 │   ├── fetch.py                   # 数据采集引擎(需 akshare)
 │   └── daily_brief.py             # 三时段批量采集(供 cron)
@@ -58,13 +59,36 @@ pip install akshare -i https://pypi.tuna.tsinghua.edu.cn/simple --break-system-p
 能力被阉割。akshare 接口偶随数据源改版失效,遇到大面积取数失败时先升级:
 `pip install -U akshare -i https://pypi.tuna.tsinghua.edu.cn/simple --break-system-packages`
 
+**第 3b 步(强烈推荐):配置 Tushare token,作为主数据源**
+Tushare 是专业级数据源,走官方 API + token 鉴权,**无反爬、无网页抓取**,
+是大陆网络下最稳定的方案。本 skill 已内置 Tushare 支持(零额外依赖,纯标准库调用),
+配置 token 后会自动作为主源,AKShare 退为备源。2000 积分即覆盖本 skill 全部核心数据
+(日线/每日指标/资金流/龙虎榜/指数/财务)。
+
+配置方式二选一:
+```bash
+# 方式1:环境变量(推荐,适合 cron)
+export TUSHARE_TOKEN=你的token
+
+# 方式2:写入配置文件
+mkdir -p ~/.astock-tracker && echo "你的token" > ~/.astock-tracker/tushare_token.txt
+```
+> 注意:moneyflow_dc(东财源资金流)和 moneyflow_ths(同花顺源)需 5000 积分,
+> 2000 积分用不了;但基础的 moneyflow 接口 2000 分即可,字段足够计算主力净流入,
+> 本 skill 用的正是 moneyflow。未配置 token 也能运行(自动用 AKShare),
+> 但配置后稳定性大幅提升,强烈建议配置。
+
 **第 4 步:接口连通性自检(必须通过才算装好)**
 ```bash
 python3 <你的skills目录>/ZSkills/astock-tracker/scripts/fetch.py selfcheck
 ```
-- 期望:`passed` 显示 6/6 或多数 OK。
-- 若 0/6:网络无法访问财经数据源,告知用户检查网络能否访问 eastmoney.com,
-  或 `pip install -U akshare` 升级版本。**在自检不通过前,不要假装能取数。**
+- 看 `verdict` 字段:
+  - "✅ 可用:Tushare 主源正常" → 最佳状态,数据稳定无反爬,直接开始用
+  - "⚠ 可用但降级:正使用 AKShare 备源" → 能用,但建议检查 Tushare token 是否配置正确
+  - "❌ 不可用" → Tushare 和 AKShare 核心维度都失败,检查 token 与网络
+- `tushare.configured` 显示 token 是否配置;`tushare.checks` 显示各 Tushare 维度状态。
+- **只要 `usable: true` 就算装好,可以继续。** 不要因为某个 AKShare 备源接口失败就停止——
+  Tushare 主源正常时,AKShare 仅用于补充千股千评、新闻等少数维度。
 
 **第 5 步:用一个真实股票验证端到端**
 ```bash
